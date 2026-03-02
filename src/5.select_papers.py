@@ -52,6 +52,7 @@ CARRYOVER_DAYS = 5
 CARRYOVER_RATIO = 0.5
 SOURCE_FRESH_FETCH = "fresh_fetch"
 SOURCE_CARRYOVER_CACHE = "carryover_cache"
+PRIORITY_DEEP_SCORE = 9.0
 
 
 def log(message: str) -> None:
@@ -602,25 +603,41 @@ def process_mode(
     deep_candidates = [p for p in candidates if float(p.get("llm_score", 0)) >= 8.0]
     deep_candidates = sort_by_score(deep_candidates)
 
+    priority_deep_candidates = [
+        p
+        for p in deep_candidates
+        if float(p.get("llm_score", 0)) >= PRIORITY_DEEP_SCORE
+    ]
+    regular_deep_candidates = [
+        p
+        for p in deep_candidates
+        if float(p.get("llm_score", 0)) < PRIORITY_DEEP_SCORE
+    ]
+
     cap = None
     deep_selected: List[Dict[str, Any]] = []
     if cfg.get("deep_unlimited"):
-        deep_selected = deep_candidates
+        deep_selected = priority_deep_candidates + regular_deep_candidates
     else:
         deep_base = int(cfg.get("deep_base") or 0)
         cap = deep_base + tag_count
-        if len(deep_candidates) <= cap:
-            deep_selected = deep_candidates
+
+        need = max(cap - len(priority_deep_candidates), 0)
+        if need == 0 or not regular_deep_candidates:
+            deep_selected = priority_deep_candidates
+        elif len(priority_deep_candidates) >= cap:
+            deep_selected = priority_deep_candidates
         else:
             strategy = str(cfg.get("deep_strategy") or "round_robin")
             if strategy == "score":
-                deep_selected = deep_candidates[:cap]
+                extra_selected = regular_deep_candidates[:need]
             else:
-                deep_selected = select_deep_with_carryover(
-                    deep_candidates,
-                    cap,
+                extra_selected = select_deep_with_carryover(
+                    regular_deep_candidates,
+                    need,
                     carryover_ratio,
                 )
+            deep_selected = priority_deep_candidates + extra_selected
 
     selected_ids = {p.get("id") for p in deep_selected}
     deep_overflow = [p for p in deep_candidates if p.get("id") not in selected_ids]
